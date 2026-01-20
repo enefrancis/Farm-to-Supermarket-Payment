@@ -8,6 +8,11 @@
 (define-constant err-invalid-status (err u105))
 (define-constant err-already-confirmed (err u106))
 (define-constant err-payment-locked (err u107))
+(define-constant err-invalid-rating (err u108))
+(define-constant err-already-rated (err u109))
+
+(define-constant min-rating u1)
+(define-constant max-rating u5)
 
 (define-data-var next-order-id uint u1)
 
@@ -49,6 +54,22 @@
 (define-map escrow-balances
   { order-id: uint }
   { amount: uint }
+)
+
+(define-map farmer-reputation
+  { farmer: principal }
+  {
+    rating-sum: uint,
+    rating-count: uint,
+  }
+)
+
+(define-map order-ratings
+  { order-id: uint }
+  {
+    rating: uint,
+    rater: principal,
+  }
 )
 
 (define-public (register-farmer
@@ -236,6 +257,72 @@
 
 (define-read-only (get-escrow-balance (order-id uint))
   (map-get? escrow-balances { order-id: order-id })
+)
+
+(define-read-only (get-farmer-reputation (farmer principal))
+  (map-get? farmer-reputation { farmer: farmer })
+)
+
+(define-read-only (get-order-rating (order-id uint))
+  (map-get? order-ratings { order-id: order-id })
+)
+
+(define-public (rate-completed-order (order-id uint) (rating uint))
+  (let (
+      (order (unwrap! (map-get? orders { order-id: order-id }) err-not-found))
+      (supermarket tx-sender)
+      (farmer (get farmer order))
+    )
+    (asserts! (is-eq supermarket (get supermarket order)) err-unauthorized)
+    (asserts! (is-eq (get status order) "completed") err-invalid-status)
+    (asserts! (>= rating min-rating) err-invalid-rating)
+    (asserts! (<= rating max-rating) err-invalid-rating)
+    (asserts! (is-none (map-get? order-ratings { order-id: order-id })) err-already-rated)
+    (map-set order-ratings { order-id: order-id } {
+      rating: rating,
+      rater: supermarket,
+    })
+    (match (map-get? farmer-reputation { farmer: farmer })
+      existing
+        (let (
+            (new-sum (+ (get rating-sum existing) rating))
+            (new-count (+ (get rating-count existing) u1))
+            (denominator (* max-rating new-count))
+            (new-score (/ (* u100 new-sum) denominator))
+          )
+          (map-set farmer-reputation { farmer: farmer } {
+            rating-sum: new-sum,
+            rating-count: new-count,
+          })
+          (match (map-get? farmer-profiles { farmer: farmer })
+            profile
+              (map-set farmer-profiles { farmer: farmer }
+                (merge profile { reputation-score: new-score })
+              )
+            false
+          )
+        )
+      (let (
+          (new-sum rating)
+          (new-count u1)
+          (denominator (* max-rating new-count))
+          (new-score (/ (* u100 new-sum) denominator))
+        )
+        (map-set farmer-reputation { farmer: farmer } {
+          rating-sum: new-sum,
+          rating-count: new-count,
+        })
+        (match (map-get? farmer-profiles { farmer: farmer })
+          profile
+            (map-set farmer-profiles { farmer: farmer }
+              (merge profile { reputation-score: new-score })
+            )
+          false
+        )
+      )
+    )
+    (ok rating)
+  )
 )
 
 (define-read-only (get-next-order-id)
